@@ -1,4 +1,5 @@
 #Creating a MH algorithm for logistic regression data with the ridge prior
+library(bayesreg)
 library(extraDistr)
 
 #Some simulated data to test - using bivariate normal example first
@@ -26,6 +27,10 @@ return(myData)
 }
 
 data <- create_MVNdata(100, 100, c(2,1,0)) #making it more difficult
+
+# Let's quickly visualise this data
+ggplot(data, aes(x=X1, y=X2, group = label) ) +
+ stat_density_2d(aes(color = as.factor(label), fill = as.factor(label), alpha = ..level..), geom = "polygon")
 
 # See how MLE logistic regression performs first
 mle <- glm(label ~., data = data, family = binomial(link = 'logit')) 
