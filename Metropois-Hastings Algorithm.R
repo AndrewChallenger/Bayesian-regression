@@ -6,8 +6,9 @@ library(extraDistr)
 #assumes mu0 just zeros and no correlation for now
 create_MVNdata <- function(n0, n1, mu1){
   #n0, n1 number of draws from each dist, mu1 mean vector for second dist
-mu0 <- c(0,0)
-Sigma0 <- Sigma1 <- diag(1,nrow = 2)
+p <- length(mu1)
+mu0 <- rep(0,p)
+Sigma0 <- Sigma1 <- diag(1,nrow = p)
 
 library(mvtnorm)
 
@@ -24,27 +25,30 @@ myData <- data.frame(x, label = y)
 return(myData)
 }
 
-data <- create_MVNdata(100, 100, c(2,2)) #should be easy
+data <- create_MVNdata(100, 100, c(2,1,0)) #makeing it more difficult
 
 # See how MLE logistic regression performs first
 mle <- glm(label ~., data = data, family = binomial(link = 'logit')) 
 summary(mle)
-mle$coefficients #works fine
+mle$coefficients #seems good - coef 3 not sig but still quite large as expected with MLE
 
 #See how bayesreg does - all inputs match my algorithm
-breg <- bayesreg(as.factor(label) ~.,data = data, model = 'logistic', prior = 'ridge', n.samples = 2000, thin = 5)
+library(bayesreg)
+breg <- bayesreg(as.factor(label) ~.,data = data, model = 'logistic', prior = 'ridge', n.samples = 2000, thin = 10)
 beta1 <- breg$beta[1,]
 plot(beta1) #looks good
 hist(beta1)
 summary(breg)
 breg$mu.beta
-#coefs have shrunk a bit from MLE which is good 
+#coefs have shrunk a bit from MLE which is good - but thinks coef 3 is sig - problem 
+# with ridge
 
 #Use Paul's t-test check for convergence for beta1
 sample1 <- head(beta1, 100)
 sample2 <- tail(beta1, 100)
-t.test(sample1, sample2) #don't reject H0 which is good
-#Bayesreg seems to converge and shrink coefficients!
+t.test(sample1, sample2) 
+#Bayesreg not working great - taking longer to converge and not shrinking coef3 enough
+#due to ridge prior
 
 
 
@@ -54,8 +58,8 @@ Y <- data$label
 X <- select(data, -label)
 burnin <- 1000
 n_iters <- 2000
-thin <- 5
-sd <- c(1.2,1.5,1.5,7.5,6) #seemed to be good
+thin <- 10
+sd <- c(1.2,1.5,1.5, 1.5,7.5,6) #seemed to be good
 
 #First create function that calculates pointwise log posteriors (proportional)
 
@@ -85,7 +89,7 @@ post <- function(Y, X, beta, beta0, sigma, lambda){
 
 
 #Y is response vector, X is matrix of predictors, number of its, burnin amount, 
-#notice NO THINNING here - question about thinning
+#thin, sd is standard deviations for markov chain jumping
 MH <- function(Y, X, n_iters, burnin, thin, sd){
   p <- length(X)
   
@@ -194,46 +198,63 @@ MH <- function(Y, X, n_iters, burnin, thin, sd){
   #Finding acceptance rate - over ALL iterations (including burnin?)
   acc_rate <- count/total_its
   
+  #Finding means and estimate of credibility intervals
+  mu_beta <- apply(beta, 1, mean)
+  CI <- matrix(rep(0,2*p), nrow = p)
+  for (m in 1:p){
+    CI[m,] <- quantile(beta[m,], probs = c(0.025, 0.975))
+  }
   
-  return(list(beta = beta, beta0 = beta0, sigma = sigma, lambda = lambda, acc_rate = acc_rate))
+  return(list(beta = beta, beta0 = beta0, sigma = sigma, lambda = lambda, mu_beta = mu_beta, CI = CI, acc_rate = acc_rate))
 }
 
 result <- MH(Y,X,n_iters,burnin,thin, sd)
 #Look at beta 1 again
-betaMH <- result[[1]]
+betaMH <- result$beta
 beta1MH <- betaMH[1,]
 beta2MH <- betaMH[2,]
+beta3MH <- betaMH[3,]
 plot(beta1MH)
+plot(beta2MH)
+plot(beta3MH)
 hist(beta1MH)
-param_ests <- apply(betaMH, 1, median)
-param_ests
+hist(beta2MH)
+hist(beta3MH)
+
+result$mu_beta
+result$CI
 
 #Test for convergence for beta1
 sample1 <- head(beta1MH, 100)
 sample2 <- tail(beta1MH, 100)
-t.test(sample1, sample2) #not sig - seems to work!
+t.test(sample1, sample2) #converged in this case - more thinning needed
 
 #Test for convergence for beta2
 sample1 <- head(beta2MH, 100)
 sample2 <- tail(beta2MH, 100)
 t.test(sample1, sample2) #not sig - seems to work!
 
+#Beta 3
+sample1 <- head(beta3MH, 100)
+sample2 <- tail(beta3MH, 100)
+t.test(sample1, sample2) #not sig - seems to work!
+
+
 #Comparing parameter estimates again
 mle$coefficients #mle
 breg$mu.beta #bayesreg - uses mean
-param_ests #my algorithm - uses median
+result$mu_beta #my algorithm - uses mean
+#Mine shrinking more than MLE, and sometimes more than bayesreg - sometimes not
 
 #Comparing distribution of beta1 for bayesreg and my algorithm
 library(ggplot2)
 library(gridExtra)
-pl <- ggplot(data = as.data.frame(beta1)) + geom_histogram(aes(x=beta1),binwidth = 0.2)
-pl2 <- ggplot(data = as.data.frame(beta1MH)) + geom_histogram(aes(x=beta1MH),binwidth = 0.2)
+pl <- ggplot(data = as.data.frame(beta1)) + geom_histogram(aes(x=beta1),binwidth = 0.2) + coord_cartesian(xlim = c(1.3,3.8))
+pl2 <- ggplot(data = as.data.frame(beta1MH)) + geom_histogram(aes(x=beta1MH),binwidth = 0.2) + coord_cartesian(xlim = c(1.3,3.8))
 grid.arrange(pl, pl2)
 
 
-#Looks fairly good to me. The algorithm seems to fairly well follow the bayesreg one.
-#Still need to check similarity and convergence of all parameters and test of more
-#difficult data but definitely a good start!
+#So needed more thinning in this case but not more its - still working fairly well
 
 
 
