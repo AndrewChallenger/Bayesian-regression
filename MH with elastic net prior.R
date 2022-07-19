@@ -25,7 +25,7 @@ create_MVNdata <- function(n0, n1, mu1){
   return(myData)
 }
 
-data <- create_MVNdata(100, 100, c(2,2)) #easy data first
+data <- create_MVNdata(100, 100, c(2,1,0)) #easy data first
 
 # See how MLE logistic regression performs first
 mle <- glm(label ~., data = data, family = binomial(link = 'logit')) 
@@ -34,18 +34,18 @@ mle$coefficients
 
 
 library(bayesreg)
-breg <- bayesreg(as.factor(label) ~.,data = data, model = 'logistic', prior = 'ridge', n.samples = 2000, thin = 10)
+breg <- bayesreg(as.factor(label) ~.,data = data, model = 'logistic', prior = 'ridge', n.samples = 2000, thin = 8)
 beta1 <- breg$beta[1,]
 plot(beta1) 
 hist(beta1)
-summary(breg)
+summary(breg) #sees beta3 not sig - good!
 breg$mu.beta
 
 
 #Use Paul's t-test check for convergence for beta1
 sample1 <- head(beta1, 100)
 sample2 <- tail(beta1, 100)
-t.test(sample1, sample2) 
+t.test(sample1, sample2) #converges - good!
 
 
 #Set up for my algorithm
@@ -54,8 +54,8 @@ Y <- data$label
 X <- select(data, -label)
 burnin <- 1000
 n_iters <- 2000
-thin <- 10
-sd <- c(1.2,1.5,1.5, 1.5,7.5,6) #seemed to be good
+thin <- 8
+sd <- c(1.2,1.5,1.5, 1.5,100,6, 6) #seemed to be good
 
 #First create function that calculates pointwise log posteriors (proportional)
 
@@ -67,6 +67,7 @@ post <- function(Y, X, beta, beta0, sigma, lambda1, lambda2){
     pr_lambda1 <- log(dhcauchy(lambda1))
     pr_lambda2 <- log(dhcauchy(lambda2))
     pr_beta <- exp((-1/(2*sigma^2)) * (lambda1*abs(beta) + lambda2*(beta^2)))
+    #is this right? should be a normalising constant but don't know what that is
     
     #log prior assuming independence
     l_prior <- pr_sigma+pr_lambda1 + pr_lambda2+sum(pr_beta)
@@ -225,13 +226,13 @@ result <- MH(Y,X,n_iters,burnin,thin, sd)
 betaMH <- result$beta
 beta1MH <- betaMH[1,]
 beta2MH <- betaMH[2,]
-#beta3MH <- betaMH[3,]
+beta3MH <- betaMH[3,]
 plot(beta1MH)
 plot(beta2MH)
-#plot(beta3MH)
+plot(beta3MH)
 hist(beta1MH)
 hist(beta2MH)
-#hist(beta3MH)
+hist(beta3MH)
 
 result$mu_beta
 result$CI
@@ -244,19 +245,19 @@ t.test(sample1, sample2)
 #Test for convergence for beta2
 sample1 <- head(beta2MH, 100)
 sample2 <- tail(beta2MH, 100)
-t.test(sample1, sample2) 
+t.test(sample1, sample2)  #not converged
 
 #Beta 3
-#sample1 <- head(beta3MH, 100)
-#sample2 <- tail(beta3MH, 100)
-#t.test(sample1, sample2) #not sig - seems to work!
+sample1 <- head(beta3MH, 100)
+sample2 <- tail(beta3MH, 100)
+t.test(sample1, sample2) #not sig - seems to work!
 
 
 #Comparing parameter estimates again
 mle$coefficients #mle
 breg$mu.beta #bayesreg - uses mean
 result$mu_beta #my algorithm - uses mean
-
+# Not good - making coefficients larger!
 
 #Comparing distribution of beta1 for bayesreg and my algorithm
 library(ggplot2)
@@ -264,7 +265,9 @@ library(gridExtra)
 pl <- ggplot(data = as.data.frame(beta1)) + geom_histogram(aes(x=beta1),binwidth = 0.2) + coord_cartesian(xlim = c(1.3,3.8))
 pl2 <- ggplot(data = as.data.frame(beta1MH)) + geom_histogram(aes(x=beta1MH),binwidth = 0.2) + coord_cartesian(xlim = c(1.3,3.8))
 grid.arrange(pl, pl2)
+#Bigger for bigger beta
 
+#Not working at all - it's enlarging all coefficients!!
 
 
 
