@@ -25,7 +25,7 @@ myData <- data.frame(x, label = y)
 return(myData)
 }
 
-data <- create_MVNdata(100, 100, c(2,1,0)) #makeing it more difficult
+data <- create_MVNdata(100, 100, c(2,1,0)) #making it more difficult
 
 # See how MLE logistic regression performs first
 mle <- glm(label ~., data = data, family = binomial(link = 'logit')) 
