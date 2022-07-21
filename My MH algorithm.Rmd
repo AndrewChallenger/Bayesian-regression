@@ -1,0 +1,329 @@
+---
+title: <center> My MH algorithm
+author: <center> Andrew Challenger
+date: <center> 2022-07-19
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Introduction
+
+In this study we have designed and implemented a Metropolis-Hastings (MH) algorithm, that simulates a posterior distribution of the parameters of a Bayesian logistic regression model. A detailed explanation of the algorithm, along with a proof as to why it works, can be found at https://similarweb.engineering/mcmc/. We used a full Bayes approach with the ridge prior as part of a Bayesian penalized regression study. We then compared the algorithm with the equivalent algorithm from the Bayesreg package when applied to a simple simulated classification problem.
+
+## The algorithm
+
+In order to execute a MH algorithm we first need a function that calculates the point-wise posteriors (up to a proportionality constant) of the predictors, which is shown below. The function takes inputs:
+
+* Y, a vector of length n with the recorded binary responses (assumed to be 0 and 1)
+* X, a p by n matrix of recorded values of the predictors
+* beta, a vector of length p with the values of the current estimates of the parameters $\beta_1$, ..., $\beta_p$
+* beta0, a single value which is the current estimate of the intercept term $\beta_0$
+* sigma, a single value which is the current estimate of the residual standard deviation $\sigma$
+* lambda, a single value which is the current estimate of the penalty parameter $\lambda$
+
+The function then outputs the log of the posterior at that point, to a proportionality constant (which we can ignore here as our MH algorithm is only concerned with ratios between posteriors, so these constants cancel). We take uniform priors on $\beta_0$ ($p(\beta_0) = 1$) and $\sigma$ ($p(\sigma) = \sigma^{-1}$), and a half-Cauchy(0,1) prior on $\lambda$. We take the ridge prior on the coefficients, specifically $\beta_i \mid \lambda, \sigma \sim Normal(0,\frac{\sigma^2}{\lambda})$.
+
+```{r posterior function}
+library(extraDistr)
+post <- function(Y, X, beta, beta0, sigma, lambda){ 
+  if (sigma > 0 & lambda > 0){ #need to be positive by definition
+    
+    #Calculating log priors - not including beta0 as always vanishes
+    pr_sigma <- log(1/sigma) 
+    pr_lambda <- log(dhcauchy(lambda))
+    pr_beta <- log(dnorm(beta, 0, sigma/sqrt(lambda))) #ridge prior
+    l_prior <- pr_sigma+pr_lambda+sum(pr_beta) #log prior
+    
+    logit <- beta0 + as.matrix(X) %*% beta 
+    prob <- 1/(1+exp(-logit))
+    l_like <- sum(log(dbinom(Y, size = 1, prob = prob))) #calculates log likelihood for logistic regression
+    
+    l_pst <- l_like + l_prior # log posterior
+  }
+  else{
+    l_pst <- -Inf #this means we'll never jump to a new sigma or lambda is they're below 0
+  }
+  return(l_pst)
+}
+```
+
+Below is the MH algorithm, which takes the following inputs:
+
+* Y and X, the same as the 'post' function
+* n_iters, the number of iterations of the markov chain that will be recorded
+* burnin, the desired amount of burnin, e.g. a burnin value of 1000 will remove the first 1000 iterations
+* thin, the desired level of thinning, e.g. a thin value of 5 will only record every 5'th iteration
+* sd, a vector of length p+3, where the first p entries are the standard deviations used the generate the proposal values of the p parameters for the predictors, the p+1 entry is the same for $\beta_0$, the p+2 entry the same for $\sigma$, and the p+3 entry is the same for $\lambda$
+
+The function returns the recorded iterations for each parameter, along with:
+
+* mu_beta, a vector of length p with the mean value of each parameter $\beta_1$, ..., $\beta_p$ over all recorded iterations
+* CI, a p by 2 matrix giving an estimate for the 95% credibility intervals for each parameter $\beta_1$, ..., $\beta_p$
+* acc_rate, a vector of length p+3 giving the acceptance rate for each paremeter (variables are given in the same order as the sd vector)
+
+
+```{r MH algorithm}
+MH <- function(Y, X, n_iters, burnin, thin, sd){
+  p <- length(X) #number of predictors
+  
+  #for now choose all of the starting value as 1
+  initial_beta <- rep(1, p)
+  initial_sigma <- initial_lambda <- initial_beta0 <- 1
+  
+  count <- rep(0, p+3) #counter to calculate acceptance rate
+  
+  total_its <- burnin + n_iters*thin #total number of iterations needed
+  
+  #Now making matrix/vectors to save iterations
+  sigma <- lambda <- beta0 <- rep(0, total_its)
+  beta <- matrix(rep(0, total_its * p), nrow = p)
+  
+  beta0[1] <- initial_beta0
+  sigma[1] <- initial_sigma
+  lambda[1] <- initial_lambda
+  beta[,1] <- initial_beta
+  
+  #Now loop through algorithm
+  for (n in 2:total_its){
+    
+    #current values
+    cur_beta0 <- beta0[n-1]
+    cur_sigma <- sigma[n-1]
+    cur_lambda <- lambda[n-1]
+    cur_beta <- beta[,n-1]
+    
+    #generating new proposed value of lambda by adding to the current value a random draw from a N(0, proposal standard deviation for lambda given in the sd input) distribution
+    new_lambda <- cur_lambda + rnorm(n=1, mean = 0, sd = sd[p+3])
+    
+    #Calculate log(A), where A is acceptance ratio
+    new_post <- post(Y, X, beta = cur_beta, beta0 = cur_beta0, sigma = cur_sigma, lambda = new_lambda) #posterior for new value
+    old_post <- post(Y, X, beta = cur_beta, beta0 = cur_beta0, sigma = cur_sigma, lambda = cur_lambda) #posterior for current value
+    logA <- new_post - old_post
+    A <- exp(logA) #transforming back from log
+    
+    if (runif(1) < A){ #criteria for accepting new value
+      lambda[n] <- new_lambda
+      count[p+3] <- count[p+3] + 1 #adds one to the counter as we've accepted
+    }
+    else {
+      lambda[n] <- cur_lambda
+    }
+    
+    #And repeat for the rest of the variables
+    
+    new_sigma <- cur_sigma + rnorm(n=1, mean = 0, sd = sd[p+2])
+    new_post <- post(Y, X, beta = cur_beta, beta0 = cur_beta0, sigma = new_sigma, lambda = lambda[n])
+    old_post <- post(Y, X, beta = cur_beta, beta0 = cur_beta0, sigma = cur_sigma, lambda = lambda[n])
+    logA <- new_post - old_post
+    A <- exp(logA)
+    
+    if (runif(1) < A){
+      sigma[n] <- new_sigma
+      count[p+2] <- count[p+2] + 1 
+    }
+    else {
+      sigma[n] <- cur_sigma
+    }
+    
+    new_beta0 <- cur_beta0 + rnorm(n=1, mean = 0, sd = sd[p+1])
+    new_post <- post(Y, X, beta = cur_beta, beta0 = new_beta0, sigma = sigma[n], lambda = lambda[n])
+    old_post <- post(Y, X, beta = cur_beta, beta0 = cur_beta0, sigma = sigma[n], lambda = lambda[n])
+    logA <- new_post - old_post
+    A <- exp(logA)
+    
+    if (runif(1) < A){
+      beta0[n] <- new_beta0
+      count[p+1] <- count[p+1] + 1 
+    }
+    else {
+      beta0[n] <- cur_beta0
+    }
+    
+    
+    for (m in 1:p){ #run through each variable in beta to do the same thing
+      new_beta <- cur_beta
+      new_beta[m] <- cur_beta[m] + rnorm(n=1, mean = 0, sd = sd[m])
+      
+      new_post <- post(Y, X, beta = new_beta, beta0 = beta0[n], sigma = sigma[n], lambda = lambda[n])
+      old_post <- post(Y, X, beta = cur_beta, beta0 = beta0[n], sigma = sigma[n], lambda = lambda[n])
+      logA <- new_post - old_post
+      A <- exp(logA)
+      
+      if (runif(1) < A){
+        beta[,n] <- new_beta
+        count[m] <- count[m] + 1 
+      }
+      else {
+        beta[,n] <- cur_beta
+      }
+      cur_beta <- beta[,n]
+    }
+  }
+  
+  #Only recording the desired iterations as detailed by the burnin and thin inputs
+  
+  lambda <- lambda[seq(burnin+1, total_its, thin)]
+  sigma <- sigma[seq(burnin+1, total_its, thin)]
+  beta0 <- beta0[seq(burnin+1, total_its, thin)]
+  beta <- beta[,seq(burnin+1, total_its, thin)]
+  
+  #Calculating acceptance rate over all the iterations (including burnin) - this was done for simplicity
+  acc_rate <- count/total_its
+  
+  #Finding means and estimate of credibility intervals
+  mu_beta <- apply(beta, 1, mean)
+  CI <- matrix(rep(0,2*p), nrow = p)
+  for (m in 1:p){
+    CI[m,] <- quantile(beta[m,], probs = c(0.025, 0.975))
+  }
+  
+  return(list(beta = beta, beta0 = beta0, sigma = sigma, lambda = lambda, mu_beta = mu_beta, CI = CI, acc_rate = acc_rate))
+}
+```
+
+## Comparing the algorithm to Bayesreg with a simple classification simulation
+
+For our simulation study, we generated 100 samples from two Multivariate Normal (MVN) distributions, both with no correlation between variables. We chose p=3, and determined the first distribution to have mean vector (0,0,0) and the second to have mean vector (2,1,0). We then used the generated data as predictors to classify which distribution the data came from (we labelled the first distribution as 0, the second as 1). Thus, we would expect the posterior distribution of $\beta_1$ to be generally larger than $\beta_2$, which in turn should be larger than $\beta_3$, which should be centered around 0. We carry out tests for convergence of the markov chain and then compare the results of Bayesreg with our algorithm.
+
+Below is the code used to generate the data.
+
+```{r generating data}
+#Function to generate data, where n0, n1 are the numbers of draws from the first and second distribution, respectively, and mu1 is the mean for the second distribution.
+create_MVNdata <- function(n0, n1, mu1){
+
+p <- length(mu1)
+mu0 <- rep(0,p) #makes the mean from the first dist all 0
+Sigma0 <- Sigma1 <- diag(1,nrow = p) #no correlation between variables
+
+library(mvtnorm)
+
+x0 <- rmvnorm(n0, mu0, Sigma0)
+x1 <- rmvnorm(n1, mu1, Sigma1)
+
+y0 <- rep(0,n0) # Class 0 labels
+y1 <- rep(1,n1) # Class 1 labels
+
+x <- rbind(x0, x1)
+y <- c(y0, y1)
+
+myData <- data.frame(x, label = y)
+return(myData)
+}
+
+#Data as described above
+set.seed(1)
+data <- create_MVNdata(100, 100, c(2,1,0))
+```
+
+Below is the code for fitting the Bayesreg model and running convergence tests. Bayesreg performs well - there's insufficient evidence to reject convergence (as each z score is less than 1.96 in absolute value) and there is very little autocorrelation as shown by the plots. The plots show the autocorrelation for the first 100 recorded iterations of the markov chain, for $\beta_1$, $\beta_2$, and $\beta_3$ respectively. 
+
+```{r Bayesreg}
+library(bayesreg)
+#Fitting Bayesreg
+
+bysreg <- bayesreg(as.factor(label) ~.,data = data, model = 'logistic', prior = 'ridge', n.samples = 2000, thin = 5)
+
+library(coda)
+
+beta <-  bysreg$beta
+
+#Using Geweke test to test for convergence
+for (i in 1:(length(data)-1)){
+  
+ print(geweke.diag(beta[i,], frac1 = 0.1, frac2 = 0.1)$z) #compare to +-1.96
+
+}
+
+#should see little correlation
+autocorr.plot(as.mcmc(beta[1,]), lag.max = 100) 
+autocorr.plot(as.mcmc(beta[2,]), lag.max = 100)
+autocorr.plot(as.mcmc(beta[3,]), lag.max = 100) 
+
+```
+
+Below is the code for running my algorithm, with the same inputs as for Bayesreg. Again, there is insufficient evidence to conclude that the algorithm hasn't converged, and there is little autocorrelation (although slightly more than Bayesreg). 
+
+```{r my algorithm, message=FALSE}
+
+#Set up and sorting out inputs
+library(dplyr)
+Y <- data$label
+X <- select(data, -label)
+burnin <- 1000
+n_iters <- 2000
+thin <- 5
+sd <- c(0.8,1,1, 1,3,6)
+
+#Running the algorithm
+
+result <- MH(Y,X,n_iters,burnin,thin, sd)
+betaMH <- result$beta
+
+#Using Geweke test to test for convergence
+for (i in 1:(length(data)-1)){
+  
+ print(geweke.diag(betaMH[i,], frac1 = 0.1, frac2 = 0.1)$z) #compare to +-1.96
+
+}
+
+#should see little correlation
+autocorr.plot(as.mcmc(betaMH[1,]), lag.max = 100)
+autocorr.plot(as.mcmc(betaMH[2,]), lag.max = 100)
+autocorr.plot(as.mcmc(betaMH[3,]), lag.max = 100) 
+
+```
+
+We now compare the Bayesreg analysis with our own. The point estimates (using means), 95% credibility intervals, and distributions of each parameter all look very similar for both methods, indicating that our algorithm replicates Bayesreg well.
+
+```{r comparing Bayesreg to MH, message=FALSE}
+#first compare point estimates by taking the mean
+bysreg$mu.beta
+result$mu_beta
+#fairly similar which is good
+
+#next compare the 95% credibility intervals
+sum <- summary(bysreg) 
+sum$CI.coef
+result$CI
+#again seem fairly similar 
+
+#visually compare distributions of each predictor
+library(ggplot2)
+beta <- data.frame(t(beta))
+betaMH <- data.frame(t(betaMH))
+colnames(beta) <- colnames(betaMH) <- c('beta1', 'beta2', 'beta3')
+
+library(gridExtra)
+pl1 <- ggplot(data = data.frame(beta)) + geom_histogram(aes(x=beta1),binwidth = 0.1) + coord_cartesian(xlim = c(0.5,3)) + xlab('beta1 using Bayesreg')
+pl2 <- ggplot(data = data.frame(betaMH)) + geom_histogram(aes(x=beta1),binwidth = 0.1) + coord_cartesian(xlim = c(0.5,3)) + xlab('beta1 using my algorithm')
+grid.arrange(pl1,pl2, nrow = 2)
+
+pl1 <- ggplot(data = data.frame(beta)) + geom_histogram(aes(x=beta2),binwidth = 0.1) + coord_cartesian(xlim = c(0,2)) + xlab('beta2 using Bayesreg')
+pl2 <- ggplot(data = data.frame(betaMH)) + geom_histogram(aes(x=beta2),binwidth = 0.1) + coord_cartesian(xlim = c(0,2)) + xlab('beta2 using my algorithm')
+grid.arrange(pl1,pl2, nrow = 2)
+
+pl1 <- ggplot(data = data.frame(beta)) + geom_histogram(aes(x=beta3),binwidth = 0.1) + coord_cartesian(xlim = c(-1,1)) + xlab('beta3 using Bayesreg')
+pl2 <- ggplot(data = data.frame(betaMH)) + geom_histogram(aes(x=beta3),binwidth = 0.1) + coord_cartesian(xlim = c(-1,1)) + xlab('beta3 using my algorithm')
+grid.arrange(pl1,pl2, nrow = 2)
+
+
+
+
+```
+
+## Conclusion
+
+At least in this simple simulation study, my MH algorithm converges with little autocorrelation and replicates the results of Bayesreg well. Bayesreg certainly has advantages, namely a much quicker computation time and slightly less autocorrelation. This was intentionally a very brief study, and a more rigorous study would have performed more tests for convergence, more tests for similarity between the two algorithms, and repeated these tests across multiple simulations. 
+
+
+
+
+
+
+
+
+
+
